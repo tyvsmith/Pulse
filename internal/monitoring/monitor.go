@@ -1554,8 +1554,9 @@ type rrdMemCacheEntry struct {
 
 // pendingUpdatesCache caches apt pending updates count per node
 type pendingUpdatesCache struct {
-	count     int
-	checkedAt time.Time
+	count             int
+	checkedAt         time.Time
+	permissionRetryAt time.Time
 }
 
 // TTL for pending updates cache (30 minutes - balance between freshness and API load)

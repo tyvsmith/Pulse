@@ -5,6 +5,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -456,6 +457,19 @@ func (m *Monitor) applyNodePendingUpdates(ctx context.Context, instanceName stri
 		cached, hasCached := m.nodePendingUpdatesCache[nodeID]
 		m.mu.RUnlock()
 
+		// A denied check is unavailable evidence, not a successful zero. Keep
+		// its retry cadence separate from the last successful observation.
+		if now.Before(cached.permissionRetryAt) {
+			modelNode.PendingUpdatesReason = "permission_denied"
+			modelNode.PendingUpdates = cached.count
+			modelNode.PendingUpdatesCheckedAt = cached.checkedAt
+			modelNode.PendingUpdatesStatus = "unavailable"
+			if !cached.checkedAt.IsZero() {
+				modelNode.PendingUpdatesStatus = "stale"
+			}
+			return
+		}
+
 		if !hasCached || now.Sub(cached.checkedAt) >= pendingUpdatesCacheTTL {
 			// Time to check for updates
 			pendingPkgs, err := client.GetNodePendingUpdates(ctx, node.Node)
@@ -468,7 +482,13 @@ func (m *Monitor) applyNodePendingUpdates(ctx context.Context, instanceName stri
 					Str("instance", instanceName).
 					Msg("Could not check pending apt updates with configured Proxmox credentials")
 				modelNode.PendingUpdatesReason = pendingUpdatesFailureReason(err)
-				if hasCached {
+				if status, known := proxmox.APIErrorStatus(err); known && status == http.StatusForbidden {
+					cached.permissionRetryAt = now.Add(pendingUpdatesCacheTTL)
+					m.mu.Lock()
+					m.nodePendingUpdatesCache[nodeID] = cached
+					m.mu.Unlock()
+				}
+				if hasCached && !cached.checkedAt.IsZero() {
 					modelNode.PendingUpdates = cached.count
 					modelNode.PendingUpdatesCheckedAt = cached.checkedAt
 					modelNode.PendingUpdatesStatus = "stale"
